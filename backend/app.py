@@ -75,7 +75,7 @@ MODEL_SCALE_FACTOR = 0.91
 # alpha-matted segmentation, so use a bounded working image for the cutout.
 MAX_SEGMENTATION_SIDE = int(os.getenv("MAX_SEGMENTATION_SIDE", "768"))
 ALPHA_MATTING = os.getenv("ALPHA_MATTING", "false").lower() in {"1", "true", "yes"}
-REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp")
+REMBG_MODEL = os.getenv("REMBG_MODEL", "u2net_human_seg")
 
 
 def resize_for_segmentation(src: Image.Image) -> Image.Image:

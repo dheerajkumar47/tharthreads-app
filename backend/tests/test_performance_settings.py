@@ -41,8 +41,8 @@ class PerformanceSettingsTests(unittest.TestCase):
 
         self.assertIs(remove.call_args.kwargs["alpha_matting"], False)
 
-    def test_uses_lightweight_model_by_default(self):
-        self.assertEqual(app.REMBG_MODEL, "u2netp")
+    def test_uses_people_segmentation_model_by_default(self):
+        self.assertEqual(app.REMBG_MODEL, "u2net_human_seg")
 
 
 if __name__ == "__main__":
