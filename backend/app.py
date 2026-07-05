@@ -18,7 +18,9 @@ Then open http://localhost:8000 in a browser.
 """
 
 import io
+import os
 import threading
+import time
 import zipfile
 from pathlib import Path
 from typing import cast
@@ -44,7 +46,12 @@ def get_rembg_session():
             if _session is None:
                 from rembg import new_session
 
-                _session = new_session("u2net_human_seg")
+                started = time.perf_counter()
+                _session = new_session(REMBG_MODEL)
+                print(
+                    f"Loaded rembg model {REMBG_MODEL} in {time.perf_counter() - started:.2f}s",
+                    flush=True,
+                )
     return _session
 
 
@@ -64,6 +71,23 @@ PLACEMENT_BOX = {
 # reference look better). Lower = smaller model. Tune freely.
 MODEL_SCALE_FACTOR = 0.91
 
+# Runtime speed controls. Render's free/small CPU is too slow for full-size
+# alpha-matted segmentation, so use a bounded working image for the cutout.
+MAX_SEGMENTATION_SIDE = int(os.getenv("MAX_SEGMENTATION_SIDE", "768"))
+ALPHA_MATTING = os.getenv("ALPHA_MATTING", "false").lower() in {"1", "true", "yes"}
+REMBG_MODEL = os.getenv("REMBG_MODEL", "u2netp")
+
+
+def resize_for_segmentation(src: Image.Image) -> Image.Image:
+    if max(src.size) <= MAX_SEGMENTATION_SIDE:
+        return src
+    resized = src.copy()
+    resized.thumbnail(
+        (MAX_SEGMENTATION_SIDE, MAX_SEGMENTATION_SIDE),
+        Image.Resampling.LANCZOS,
+    )
+    return resized
+
 
 def cutout_model(source_bytes: bytes) -> Image.Image:
     """Remove the background from the source catalog photo and return
@@ -76,7 +100,7 @@ def cutout_model(source_bytes: bytes) -> Image.Image:
     """
     from rembg import remove
 
-    src = Image.open(io.BytesIO(source_bytes)).convert("RGB")
+    src = resize_for_segmentation(Image.open(io.BytesIO(source_bytes)).convert("RGB"))
 
     # rembg's type hints are loose (it can return bytes or an ndarray
     # depending on input type) - we always pass it a PIL Image, so it
@@ -85,7 +109,7 @@ def cutout_model(source_bytes: bytes) -> Image.Image:
     result = cast(Image.Image, remove(
         src,
         session=get_rembg_session(),
-        alpha_matting=True,
+        alpha_matting=ALPHA_MATTING,
         alpha_matting_foreground_threshold=240,
         alpha_matting_background_threshold=10,
         alpha_matting_erode_size=8,
@@ -154,10 +178,20 @@ def composite(blank_bytes: bytes, cutout: Image.Image) -> Image.Image:
 
 def run_one_swap(blank_bytes: bytes, source_bytes: bytes) -> bytes:
     """Run the full pipeline for one source photo and return finished PNG bytes."""
+    started = time.perf_counter()
     cutout = cutout_model(source_bytes)
+    cutout_done = time.perf_counter()
     final_image = composite(blank_bytes, cutout)
     buf = io.BytesIO()
     final_image.save(buf, format="PNG")
+    finished = time.perf_counter()
+    print(
+        "swap timing "
+        f"cutout={cutout_done - started:.2f}s "
+        f"composite={finished - cutout_done:.2f}s "
+        f"total={finished - started:.2f}s",
+        flush=True,
+    )
     return buf.getvalue()
 
 
