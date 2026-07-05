@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thar Threads — Catalog Swap</title>
+<style>
+  :root{ --green:#0b3d2e; --green2:#0f4f3b; --gold:#c9a227; --cream:#faf7f0; --line:#e2dccb; }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:'Segoe UI',Arial,sans-serif; background:var(--cream); color:#222;
+    display:flex; flex-direction:column; align-items:center; padding:20px 14px 50px;
+    min-height:100vh;
+  }
+  h1{color:var(--green); font-size:20px; margin:4px 0 2px; text-align:center;}
+  .sub{color:#666; font-size:13px; margin-bottom:16px; text-align:center; max-width:480px;}
+  .card{
+    background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px;
+    width:100%; max-width:480px; margin-bottom:14px; box-shadow:0 2px 10px rgba(0,0,0,0.05);
+  }
+  .upload{
+    border:2px dashed var(--line); border-radius:10px; padding:16px; text-align:center;
+    cursor:pointer; margin-bottom:12px; transition:.15s; background:#fdfcf9;
+  }
+  .upload.filled{border-color:var(--green2); background:#f2f8f5;}
+  .upload input{display:none;}
+  .upload .label{font-size:14px; font-weight:600; color:var(--green);}
+  .upload .hint{font-size:11px; color:#999; margin-top:3px; word-break:break-all;}
+  .upload img.preview{max-height:120px; border-radius:6px; margin-bottom:6px;}
+  .thumb-row{display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin-bottom:6px;}
+  .thumb-row img{width:44px; height:44px; object-fit:cover; border-radius:6px; border:1px solid var(--line);}
+  button{
+    width:100%; background:var(--gold); color:#2a2005; border:none; border-radius:8px;
+    padding:14px; font-size:15px; font-weight:700; cursor:pointer; margin-top:4px;
+  }
+  button:disabled{background:#ddd; color:#999;}
+  button.secondary{background:var(--green); color:#fff; margin-top:10px;}
+  .status{font-size:13px; color:#666; text-align:center; margin-top:10px; min-height:18px;}
+  .result-grid{display:grid; grid-template-columns:1fr; gap:12px;}
+  .result-item{border:1px solid var(--line); border-radius:8px; padding:8px; background:#fdfcf9;}
+  .result-grid img{width:100%; border-radius:8px; border:1px solid var(--line); display:block;}
+  .result-name{font-size:12px; color:#666; margin:7px 0 0; word-break:break-all;}
+  .result-item button{font-size:13px; padding:11px; margin-top:8px;}
+  .spinner{
+    width:22px; height:22px; border:3px solid #eee; border-top-color:var(--gold);
+    border-radius:50%; animation:spin .8s linear infinite; margin:10px auto 0;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+  <h1>THAR THREADS</h1>
+  <p class="sub">Upload your blank catalog + one or more other-brand photos. Tap Swap — each model gets cut out and dropped into your template automatically.</p>
+
+  <div class="card">
+    <label class="upload" id="blankBox">
+      <input type="file" id="blankInput" accept="image/*">
+      <div class="content">
+        <div class="label">📄 Your Blank Catalog Template</div>
+        <div class="hint">Tap to upload</div>
+      </div>
+    </label>
+
+    <label class="upload" id="srcBox">
+      <input type="file" id="srcInput" accept="image/*" multiple>
+      <div class="content">
+        <div class="label">👗 Other Brand's Catalog Photo(s)</div>
+        <div class="hint">Tap to upload — pick one or select several at once</div>
+      </div>
+    </label>
+
+    <button id="swapBtn" disabled>🔁 Swap</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card result" id="resultCard" style="display:none;">
+    <div id="resultGrid" class="result-grid"></div>
+  </div>
+
+<script>
+const blankInput = document.getElementById('blankInput');
+const srcInput = document.getElementById('srcInput');
+const blankBox = document.getElementById('blankBox');
+const srcBox = document.getElementById('srcBox');
+const swapBtn = document.getElementById('swapBtn');
+const statusEl = document.getElementById('status');
+const resultCard = document.getElementById('resultCard');
+const resultGrid = document.getElementById('resultGrid');
+
+let blankFile = null;
+let srcFiles = [];
+let resultItems = [];
+
+function wireUpload(box, input, onFiles){
+  const content = box.querySelector('.content');
+  // Note: no manual box.click -> input.click() here on purpose. The <label>
+  // already forwards clicks to the <input> it contains automatically; adding
+  // our own listener on top of that was opening the file dialog twice.
+  input.addEventListener('change', e => {
+    const files = Array.from(e.target.files || []);
+    if(files.length === 0) return;
+    onFiles(files);
+    box.classList.add('filled');
+
+    if(files.length === 1){
+      const reader = new FileReader();
+      reader.onload = ev => {
+        content.innerHTML = `<img class="preview" src="${ev.target.result}"><div class="hint">${files[0].name} — tap to change</div>`;
+      };
+      reader.readAsDataURL(files[0]);
+    } else {
+      // Multiple files selected: show small thumbnails instead of one big preview.
+      content.innerHTML = `<div class="thumb-row" id="thumbRow"></div><div class="hint">${files.length} photos selected — tap to change</div>`;
+      const thumbRow = content.querySelector('#thumbRow');
+      files.forEach(f => {
+        const reader = new FileReader();
+        reader.onload = ev => {
+          const img = document.createElement('img');
+          img.src = ev.target.result;
+          thumbRow.appendChild(img);
+        };
+        reader.readAsDataURL(f);
+      });
+    }
+    checkReady();
+  });
+}
+
+wireUpload(blankBox, blankInput, files => blankFile = files[0]);
+wireUpload(srcBox, srcInput, files => srcFiles = files);
+
+function checkReady(){
+  swapBtn.disabled = !(blankFile && srcFiles.length > 0);
+}
+
+async function runSwapForFile(sourceFile){
+  const form = new FormData();
+  form.append('blank_catalog', blankFile);
+  form.append('source_catalog', sourceFile);
+
+  const res = await fetch('/api/swap', { method: 'POST', body: form });
+  if(!res.ok){
+    const err = await res.json().catch(() => ({detail: 'Something went wrong.'}));
+    throw new Error(err.detail || 'Something went wrong.');
+  }
+  return res.blob();
+}
+
+function addResultCard(blob, sourceFile, index){
+  const url = URL.createObjectURL(blob);
+  const filename = `tharthreads-${String(index + 1).padStart(2, '0')}-${sourceFile.name.replace(/\.[^.]+$/, '')}.png`;
+  resultItems.push({ url, filename });
+
+  const item = document.createElement('div');
+  item.className = 'result-item';
+
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = `Finished catalog ${index + 1}`;
+
+  const name = document.createElement('div');
+  name.className = 'result-name';
+  name.textContent = filename;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'secondary';
+  button.textContent = 'Download PNG';
+  button.addEventListener('click', () => downloadResult(url, filename));
+
+  item.appendChild(img);
+  item.appendChild(name);
+  item.appendChild(button);
+  resultGrid.appendChild(item);
+  resultCard.style.display = 'block';
+}
+
+function downloadResult(url, filename){
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+}
+
+swapBtn.addEventListener('click', async () => {
+  swapBtn.disabled = true;
+  resultCard.style.display = 'none';
+  resultGrid.innerHTML = '';
+  resultItems.forEach(item => URL.revokeObjectURL(item.url));
+  resultItems = [];
+
+  statusEl.innerHTML = `Processing 0 of ${srcFiles.length} photos... <div class="spinner"></div>`;
+
+  try{
+    for(let i = 0; i < srcFiles.length; i += 1){
+      statusEl.innerHTML = `Processing ${i + 1} of ${srcFiles.length}: ${srcFiles[i].name} <div class="spinner"></div>`;
+      const blob = await runSwapForFile(srcFiles[i]);
+      addResultCard(blob, srcFiles[i], i);
+    }
+
+    statusEl.textContent = srcFiles.length === 1
+      ? 'Done! Your PNG is ready below.'
+      : `Done! ${srcFiles.length} PNG images are ready below.`;
+  }catch(err){
+    statusEl.textContent = '⚠ ' + err.message;
+  }finally{
+    swapBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
