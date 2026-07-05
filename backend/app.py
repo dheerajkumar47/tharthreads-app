@@ -2,58 +2,53 @@
 Thar Threads - Catalog Model Swap
 ----------------------------------
 Upload a blank catalog template + one or more other-brand catalog photos.
-The server removes the background locally (rembg / U^2-Net, a free,
-open-source model - no API key, no per-image cost, no monthly cap) from
-each source photo, then pastes each cutout into the empty space on the
-blank template. Returns one PNG for a single source photo, or a ZIP of
-PNGs when multiple source photos are uploaded at once.
+The server sends each source photo to remove.bg (a dedicated background-
+removal cloud API) to cut the model out cleanly, then pastes each cutout
+into the empty space on the blank template. Returns one PNG for a single
+source photo, or a ZIP of PNGs when multiple source photos are uploaded
+at once.
 
-This is fully free forever, but each swap takes roughly 1-3 minutes
-since it's running on CPU instead of a paid cloud service.
+Why remove.bg instead of a local model: this app runs on a free hosting
+tier with very little RAM/CPU, which isn't enough to reliably run a local
+background-removal model - it was crashing/timing out in practice.
+remove.bg processes the image on their servers instead, so it's fast and
+doesn't need much from the host. Free for the first ~50 images/month per
+API key; a few cents each beyond that.
 
 Setup:
-    1. pip install -r requirements.txt
-    2. uvicorn app:app --reload --port 8000
+    1. Get a free API key at https://www.remove.bg/api
+    2. Set it as the REMOVE_BG_API_KEY environment variable (in Render's
+       dashboard for the deployed version, or in backend/config.py for
+       local testing - see config.py).
+    3. pip install -r requirements.txt
+    4. uvicorn app:app --reload --port 8000
 Then open http://localhost:8000 in a browser.
 """
 
 import io
 import os
-import threading
 import time
 import zipfile
 from pathlib import Path
-from typing import cast
 
+import requests
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFilter
 
+# The API key comes from an environment variable first (that's what Render
+# uses - set it in the service's Environment tab, never committed to git).
+# Falls back to backend/config.py for convenience when testing locally.
+try:
+    from config import REMOVE_BG_API_KEY as _CONFIG_KEY
+except ImportError:
+    _CONFIG_KEY = None
+
+REMOVE_BG_API_KEY = os.getenv("REMOVE_BG_API_KEY") or _CONFIG_KEY
+REMOVE_BG_ENDPOINT = "https://api.remove.bg/v1.0/removebg"
+
 app = FastAPI(title="Thar Threads Catalog Swap")
-
-# One rembg session, reused across requests. Loading the model is slow, so
-# create it lazily on the first swap request instead of blocking app startup
-# (otherwise the server looks "stuck" / connection-refused while it loads).
-_session = None
-_session_lock = threading.Lock()
-
-
-def get_rembg_session():
-    global _session
-    if _session is None:
-        with _session_lock:
-            if _session is None:
-                from rembg import new_session
-
-                started = time.perf_counter()
-                _session = new_session(REMBG_MODEL)
-                print(
-                    f"Loaded rembg model {REMBG_MODEL} in {time.perf_counter() - started:.2f}s",
-                    flush=True,
-                )
-    return _session
-
 
 # Where on the blank template the cut-out model gets placed, expressed
 # as fractions of the template's own width/height so it scales to any
@@ -71,60 +66,45 @@ PLACEMENT_BOX = {
 # reference look better). Lower = smaller model. Tune freely.
 MODEL_SCALE_FACTOR = 0.91
 
-# Runtime speed controls. Render's free/small CPU is too slow for full-size
-# alpha-matted segmentation, so use a bounded working image for the cutout.
-MAX_SEGMENTATION_SIDE = int(os.getenv("MAX_SEGMENTATION_SIDE", "768"))
-ALPHA_MATTING = os.getenv("ALPHA_MATTING", "false").lower() in {"1", "true", "yes"}
-REMBG_MODEL = os.getenv("REMBG_MODEL", "u2net_human_seg")
-
-
-def resize_for_segmentation(src: Image.Image) -> Image.Image:
-    if max(src.size) <= MAX_SEGMENTATION_SIDE:
-        return src
-    resized = src.copy()
-    resized.thumbnail(
-        (MAX_SEGMENTATION_SIDE, MAX_SEGMENTATION_SIDE),
-        Image.Resampling.LANCZOS,
-    )
-    return resized
-
 
 def cutout_model(source_bytes: bytes) -> Image.Image:
-    """Remove the background from the source catalog photo and return
-    a tightly-cropped, clean-edged RGBA cutout of just the model.
+    """Send the source photo to remove.bg and return a tightly-cropped
+    RGBA cutout of just the model, background fully removed."""
+    if not REMOVE_BG_API_KEY or REMOVE_BG_API_KEY == "PASTE_YOUR_KEY_HERE":
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "No remove.bg API key configured. Set the REMOVE_BG_API_KEY "
+                "environment variable (Render dashboard) or paste it into "
+                "backend/config.py for local testing."
+            ),
+        )
 
-    Single full-image, high-quality pass with alpha matting - this is
-    the version that has actually produced clean edges with no leftover
-    background. It's slow (roughly 1-3 minutes) because alpha matting is
-    computationally heavy, but it's free and unlimited.
-    """
-    from rembg import remove
+    response = requests.post(
+        REMOVE_BG_ENDPOINT,
+        files={"image_file": source_bytes},
+        data={"size": "auto"},
+        headers={"X-Api-Key": REMOVE_BG_API_KEY},
+        timeout=60,
+    )
 
-    src = resize_for_segmentation(Image.open(io.BytesIO(source_bytes)).convert("RGB"))
+    if response.status_code != 200:
+        try:
+            detail = response.json()["errors"][0]["title"]
+        except Exception:
+            detail = response.text[:200]
+        raise HTTPException(status_code=502, detail=f"remove.bg error: {detail}")
 
-    # rembg's type hints are loose (it can return bytes or an ndarray
-    # depending on input type) - we always pass it a PIL Image, so it
-    # always gives us a PIL Image back. The cast just tells the type
-    # checker that, so it doesn't flag every line below as an error.
-    result = cast(Image.Image, remove(
-        src,
-        session=get_rembg_session(),
-        alpha_matting=ALPHA_MATTING,
-        alpha_matting_foreground_threshold=240,
-        alpha_matting_background_threshold=10,
-        alpha_matting_erode_size=8,
-    ))
+    result = Image.open(io.BytesIO(response.content)).convert("RGBA")
 
-    alpha = result.split()[-1]
-    bbox = alpha.getbbox()
+    # Tight crop around the visible pixels, with a small padding margin
+    # so nothing right at the edge (loose hair, dupatta tips) gets clipped.
+    bbox = result.split()[-1].getbbox()
     if bbox is None:
         raise HTTPException(
             status_code=422,
             detail="Could not detect a model in that photo - try a clearer, full-body shot.",
         )
-
-    # Small padding margin so nothing right at the mask boundary (loose
-    # hair, dupatta tips) gets clipped by the crop.
     pad = max(4, int(0.015 * max(result.size)))
     x0, y0, x1, y1 = bbox
     x0 = max(0, x0 - pad)
@@ -230,10 +210,9 @@ async def swap_batch(
             source_bytes = await source_file.read()
             try:
                 png_bytes = run_one_swap(blank_bytes, source_bytes)
-            except HTTPException as exc:
-                # Skip photos the model couldn't process, but keep going
-                # with the rest of the batch instead of failing the whole
-                # request.
+            except HTTPException:
+                # Skip photos remove.bg couldn't process, but keep going
+                # with the rest of the batch instead of failing it all.
                 continue
             original_name = Path(source_file.filename or f"photo-{index}").stem
             zf.writestr(f"tharthreads-{index:02d}-{original_name}.png", png_bytes)

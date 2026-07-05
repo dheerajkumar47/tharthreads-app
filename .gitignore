@@ -5,3 +5,7 @@ venv/
 .run/
 .agents/
 *.log
+
+# API key - never commit this. Render uses the REMOVE_BG_API_KEY
+# environment variable instead (set in the service's Environment tab).
+backend/config.py

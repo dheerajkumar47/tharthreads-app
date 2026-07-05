@@ -1,37 +1,32 @@
-# Thar Threads — Catalog Swap App
+# Thar Threads Catalog Swap App
 
-Upload your blank catalog template + another brand's catalog photo. Tap **Swap** and the
-server detects the model, removes the background completely (no garden, no floor, no other
-brand's logo/text), and pastes just the model into the empty space on your template —
-matching the "i want this after add model image" example. Then **Download**.
+Upload one blank catalog template and one or more other-brand catalog photos. The app removes the model background with remove.bg, places each model into the empty area of your template, and returns finished PNG catalog images.
 
-## How it works
+## How It Works
 
-- `backend/app.py` — FastAPI server with one endpoint, `POST /api/swap`, that:
-  1. Runs the source photo through `rembg` (U^2-Net, human-segmentation model) to cut the
-     model out with a transparent background.
-  2. Auto-crops to the model's bounding box.
-  3. Resizes it to fit the empty space on your blank template (coordinates tuned to your
-     template's layout — see `PLACEMENT_BOX` in `app.py`) and pastes it in, bottom-anchored
-     so the feet line up with the template's floor line.
-  4. Returns the finished PNG.
-- `frontend/index.html` — a single mobile-friendly page: two upload boxes, a Swap button,
-  a Download button. No build step, plain HTML/JS.
+- `backend/app.py` is a FastAPI server with:
+  - `POST /api/swap`: one blank template plus one source photo returns one PNG.
+  - `POST /api/swap-batch`: one blank template plus many source photos returns a ZIP of PNGs. The current mobile frontend uses `/api/swap` repeatedly so each PNG appears directly on the page.
+- `frontend/index.html` is a plain HTML/JS mobile-friendly UI with no build step.
+- Background removal is handled by remove.bg, not a local ML model. This keeps Render deployment small and avoids RAM crashes on free/small instances.
 
-## Project structure
+## Required Secret
 
-```
-tharthreads-app/
-├── backend/
-│   ├── app.py            FastAPI server + compositing logic
-│   └── requirements.txt
-├── frontend/
-│   └── index.html        upload / swap / download UI
-├── Dockerfile             for one-command deploy anywhere
-└── README.md
+Set this environment variable in Render:
+
+```text
+REMOVE_BG_API_KEY=your_remove_bg_api_key
 ```
 
-## Run it on your own computer
+For local testing only, you may create `backend/config.py`:
+
+```python
+REMOVE_BG_API_KEY = "your_remove_bg_api_key"
+```
+
+`backend/config.py` is ignored by git and must not be committed.
+
+## Run Locally
 
 Requires Python 3.10+.
 
@@ -41,40 +36,26 @@ pip install -r requirements.txt
 uvicorn app:app --reload --port 8000
 ```
 
-Open `http://localhost:8000` in a browser. The first request will download the
-background-removal model (~170MB, one-time, needs internet access) — after that it's
-instant. To use it from your phone, run it on your computer and open
-`http://<your-computer's-LAN-IP>:8000` from your phone on the same Wi-Fi, or deploy it
-properly (below) to get a real link.
+Open:
 
-## Deploy it as a real link (free options)
+```text
+http://localhost:8000
+```
 
-**Render.com** (easiest):
-1. Push this folder to a GitHub repo.
-2. Render dashboard → New → Web Service → connect the repo.
-3. Render will detect the `Dockerfile` automatically and build/deploy it.
-4. You get a public URL like `https://tharthreads-app.onrender.com` — open it on any
-   phone or computer.
+## Deploy On Render
 
-**Railway.app**: same idea — connect the repo, it detects the Dockerfile, deploys, gives
-you a public URL.
+1. Push this repo to GitHub.
+2. In Render, create a new Web Service from the GitHub repo.
+3. Use Docker runtime. The root `Dockerfile` is the production build.
+4. Add `REMOVE_BG_API_KEY` in the Render service Environment tab.
+5. Deploy.
 
-Either works fine on their free tiers for personal/small-business use. If the app feels
-slow to "wake up" after being idle (normal on free tiers), that's the host sleeping the
-service, not a bug.
+## Tuning Placement
 
-## Tuning the model placement
-
-If a different template has the empty space in a different spot, open `backend/app.py`
-and adjust the `PLACEMENT_BOX` percentages (`x0`, `y0`, `x1`, `y1` — fractions of the
-template's width/height). No other code needs to change.
+If a template has the empty space in a different spot, edit `PLACEMENT_BOX` in `backend/app.py`.
 
 ## Notes
 
-- Works best with clear, well-lit, full-body catalog photos as the source.
-- If the cutout looks off (e.g. a hand or the dupatta gets clipped), it's usually because
-  the segmentation model wasn't confident at that edge — try a source photo with a plainer
-  background for best results.
-- This was developed and tested in a network-restricted sandbox where the model download
-  itself couldn't be tested live — run it locally once after downloading to confirm output
-  quality before relying on it for real catalogs.
+- Works best with clear, full-body catalog photos.
+- remove.bg account limits and billing apply to background removal usage.
+- Free hosting may still sleep after inactivity, but image processing should not crash from local ML memory usage anymore.
